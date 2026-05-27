@@ -1,0 +1,2 @@
+# Ignora apenas as pastas de checkpoint criadas pelo Jupyter
+.ipynb_checkpoints/
