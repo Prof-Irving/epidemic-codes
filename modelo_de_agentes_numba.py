@@ -191,29 +191,24 @@ func_sim_agents_numba(N, S_i, I_i, params, h, t_end)
 S_i, I_i, R_i = 99990, 10, 0
 N = S_i + I_i + R_i
 
-beta, R_0, delta = np.array([0.3]), np.array([2]), np.array([1/180, 1/365]).round(5)
+beta, R_0, delta = np.array([0.1]), np.array([0.5]), np.array([0.01])
 
-total_vaccines = np.linspace(0.2, 0.6, 3)
+t_start, t_stop, alpha = np.array([400.0]), np.array([600.0]), np.array([0.003])
 
-t_start, alpha = np.array([100, 200, 300, 400]), np.linspace(0.001, 0.01, 10)
-
-sample_size = 50
+sample_size = 1 # Number of repetitions with ne same parameter values
 
 t_end = 1250
 
-h = 1e-1
+h = 1e-0
 
-N = S_i + I_i + R_i
-
-params = np.array([[b, r_0, d, t_sa, t_sa+(tot_v/a), a, n] 
-                   for b in beta for r_0 in R_0 for d in delta for t_sa in t_start for tot_v in total_vaccines for a in alpha for n in range(sample_size)],
+params = np.array([[b, r_0, d, t_sa, t_so, a, n]
+                   for b in beta for r_0 in R_0 for d in delta for t_sa in t_start for t_so in t_stop for a in alpha for n in range(sample_size)],
                     dtype = np.float64)
-
 
 sim = func_sim_agents_numba(N, S_i, I_i, params, h, t_end)
 
 # Save localy. If you already have a file with the same name it will be overwriten
-name, file_format = '100000agents_h01_beta3_R02_nsample50more', 'npz'
+name, file_format = 'agents', 'csv'
 save_sim(sim, name, file_format)
 
 del sim
