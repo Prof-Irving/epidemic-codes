@@ -1,0 +1,12 @@
+# Ignora apenas as pastas de checkpoint criadas pelo Jupyter
+.ipynb_checkpoints/
+
+# Ignora arquivos de dados numpy comprimidos
+*.npz
+
+# Ignora arquivos de imagem
+*.jpg
+*.png
+
+# Ignora arquivos de video
+*.mp4
