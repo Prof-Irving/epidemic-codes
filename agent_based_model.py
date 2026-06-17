@@ -140,7 +140,7 @@ class SEIRD():
         return tt, SS, EE, II, RR, DD, NN
 
 
-spec = [('N', nb.i8), ('S_i', nb.i8), ('E_i', nb.i8), ('I_i', nb.i8), ('R_i', nb.i8), ('D_i', nb.i8),
+spec = [('N_i', nb.i8), ('N', nb.i8), ('S_i', nb.i8), ('E_i', nb.i8), ('I_i', nb.i8), ('R_i', nb.i8), ('D_i', nb.i8),
         ('beta_I', nb.f8), ('beta_D', nb.f8), ('T_E', nb.f8), ('T_I', nb.f8), ('T_D', nb.f8),
         ('f', nb.f8), ('dt', nb.f8),
         ('p_EI', nb.f8), ('p_IR', nb.f8), ('p_ID', nb.f8), ('p_D', nb.f8),
@@ -166,6 +166,7 @@ class SEIRD_numba():
     def __init__(self, S_i, E_i, I_i, R_i, D_i,
                beta_I, beta_D, T_E, T_I, T_D, f, dt):
         # Create object properties
+        self.N_i = S_i + E_i + I_i + R_i
         self.N = S_i + E_i + I_i + R_i
         self.beta_I = beta_I
         self.beta_D = beta_D
@@ -198,53 +199,30 @@ class SEIRD_numba():
 
     def evolve(self):
 
-        # Create temporary array
-        agents_temp = self.agents
+        p_SE_I = self.beta_I * self.I_serie[-1]/self.N * self.dt
+        p_SE_D = self.beta_D * self.D_serie[-1]/self.N * self.dt
 
-        # Get index of agents in different groups
-        sus_index = np.where(agents_temp == 0)[0]
-        exp_index = np.where(agents_temp == 1)[0]
-        inf_index = np.where(agents_temp == 2)[0]
-        dea_index = np.where(agents_temp == 4)[0]
+        for i in range(self.N_i):
+            state = self.agents[i]
 
-        # Change suseptible into infected
-        # Calculate change probability
-        p_SI_I = self.beta_I * len(inf_index)/self.N * self.dt
-        p_SI_D = self.beta_D * len(dea_index)/self.N * self.dt
-        # Verify stochastic changes
-        SI_I_condition = np.random.uniform(0, 1, len(sus_index)) <= p_SI_I
-        SI_D_condition = np.random.uniform(0, 1, len(sus_index)) <= p_SI_D
-        # Some 'S' have contact with 'I' and 'D'
-        change_condition = SI_I_condition | SI_D_condition
-        # Change and store states in temporary array
-        suscepted_exposed = np.where(change_condition, 1, 0) 
-        agents_temp[sus_index] = suscepted_exposed
+            if state == 0:  # S -> E
+                if np.random.rand() <= (p_SE_I + p_SE_D):
+                    self.agents[i] = 1
 
-        # Store types of infection
-        type_temp = self.infection_type[sus_index]
-        type_temp = np.where(SI_I_condition, 2, type_temp)
-        type_temp = np.where(SI_D_condition, 4, type_temp)
-        type_temp = np.where(SI_I_condition & SI_D_condition, 6, type_temp)
-        self.infection_type[sus_index] = type_temp
-
-        # Change exposed into infected
-        change_condition = np.random.uniform(0, 1, len(exp_index)) <= self.p_EI
-        exposed_infected = np.where(change_condition, 2, 1)
-        agents_temp[exp_index] = exposed_infected
-
-        # Change infected into removed and dead
-        x = np.random.uniform(0,1,len(inf_index))
-        cond_list = [x <= self.p_IR, x <= self.p_IR + self.p_ID]
-        infected_removed_dead = np.where(cond_list[0], 3, np.where(cond_list[1], 4, 2))
-        agents_temp[inf_index] = infected_removed_dead
-
-        # Change dead into null
-        change_condition = np.random.uniform(0, 1, len(dea_index)) <= self.p_D
-        infected_dead = np.where(change_condition, 5, 4)
-        agents_temp[dea_index] = infected_dead
-
-        # Update agents state
-        self.agents = agents_temp
+            elif state == 1:  # E -> I 
+                if np.random.rand() <= self.p_EI:
+                    self.agents[i] = 2
+                    
+            elif state == 2:  # I -> R  ou D
+                x = np.random.rand()
+                if x <= self.p_IR:
+                    self.agents[i] = 3
+                elif x <= self.p_IR + self.p_ID:
+                    self.agents[i] = 4
+                    
+            elif state == 4:  # D -> Null 
+                if np.random.rand() <= self.p_D:
+                    self.agents[i] = 5
 
 
     def step(self, steps):
@@ -255,9 +233,11 @@ class SEIRD_numba():
             
             states = self.agents
 
-            equal_condition = states[None,:] == np.array([0,1,2,3,4])[:,None]
-            S, E, I, R, D = np.sum(equal_condition, axis=1)
-            #S, E, I, R, D = (np.sum(states == i) for i in [0,1,2,3,4])
+            counts = np.zeros(6, dtype=np.int64)
+            for i in range(self.N_i):
+                counts[self.agents[i]] += 1
+
+            S, E, I, R, D = counts[0], counts[1], counts[2], counts[3], counts[4]
 
             self.S_serie.append(S)
             self.E_serie.append(E)
@@ -307,7 +287,7 @@ class SEIRD_II():
                beta_I, beta_II, beta_D, T_E, T_I, alpha, T_D, f, dt):
         # Create object properties
         self.N_i = S_i + E_i + I_i + R_i
-        self.N = S_i + E_i + I_i + R_i
+        self.N = self.N_i
         self.beta_I = beta_I
         self.beta_II = beta_II
         self.beta_D = beta_D
@@ -455,11 +435,11 @@ class SEIRD_II():
         return t, S, E, I, II, R, D, N
 
 
-spec = [('N', nb.i8), ('S_i', nb.i8), ('E_i', nb.i8), ('I_i', nb.i8), ('II_i', nb.i8), ('R_i', nb.i8), ('D_i', nb.i8),
-        ('beta_I', nb.f8), ('beta_II', nb.f8), ('beta_D', nb.f8), ('T_E', nb.f8), ('alpha', nb.f8), ('T_I', nb.f8), ('T_D', nb.f8),
+spec = [('N', nb.i8), ('N_i', nb.i8), ('S_i', nb.i8), ('E_i', nb.i8), ('I_i', nb.i8), ('II_i', nb.i8), ('R_i', nb.i8), ('D_i', nb.i8),
+        ('beta_I', nb.f8), ('beta_II', nb.f8), ('beta_D', nb.f8), ('T_E', nb.f8), ('T_I', nb.f8), ('alpha', nb.f8), ('T_D', nb.f8),
         ('f', nb.f8), ('dt', nb.f8),
-        ('p_EI', nb.f8), ('p_III', nb.f8), ('p_IR', nb.f8), ('p_ID', nb.f8), ('p_D', nb.f8), ('pc', nb.f8),
-        ('c_I', nb.f8), ('c_II', nb.f8), ('c_D', nb.f8),
+        ('p_EI', nb.f8), ('p_III', nb.f8), ('p_IR', nb.f8), ('p_ID', nb.f8), ('p_D', nb.f8), 
+        ('pc', nb.f8), ('c_I', nb.f8), ('c_II', nb.f8), ('c_D', nb.f8),
         ('S_serie', nb.types.ListType(nb.types.int64)),
         ('E_serie', nb.types.ListType(nb.types.int64)),
         ('I_serie', nb.types.ListType(nb.types.int64)),
@@ -467,7 +447,7 @@ spec = [('N', nb.i8), ('S_i', nb.i8), ('E_i', nb.i8), ('I_i', nb.i8), ('II_i', n
         ('R_serie', nb.types.ListType(nb.types.int64)),
         ('D_serie', nb.types.ListType(nb.types.int64)),
         ('t_serie', nb.types.ListType(nb.types.float64)),
-        ('agents', nb.i8[:]), ('infection_type', nb.i8[:])]
+        ('agents', nb.i8[:]), ('infection_type', nb.i8[:]), ('sus_index', nb.i8[:])]
 
 @nb.experimental.jitclass(spec)
 class SEIRD_II_numba():
@@ -485,7 +465,7 @@ class SEIRD_II_numba():
                beta_I, beta_II, beta_D, T_E, T_I, alpha, T_D, f, dt):
         # Create object properties
         self.N_i = S_i + E_i + I_i + R_i
-        self.N = S_i + E_i + I_i + R_i
+        self.N = self.N_i
         self.beta_I = beta_I
         self.beta_II = beta_II
         self.beta_D = beta_D
@@ -525,22 +505,41 @@ class SEIRD_II_numba():
         self.agents = state
 
         # Create
-        self.infection_type = np.zeros(self.N)
+        self.infection_type = np.zeros(self.N, dtype=np.int64)
+
+        self.sus_index = np.arange(S_i, dtype=np.int64)
 
     def evolve(self):
 
-        # Create temporary array
-        agents_temp = self.agents
+        #Transições de estados (Loop único pelos agentes - O segredo do Numba)
+        
+        for i in range(self.N_i):
+            state = self.agents[i]
 
-        # Get index of agents in different groups
-        sus_index = np.where(agents_temp == 0)[0]
-        exp_index = np.where(agents_temp == 1)[0]
-        inf_index = np.where(agents_temp == 2)[0]
-        isol_inf_index = np.where(agents_temp == 3)[0]
-        dea_index = np.where(agents_temp == 5)[0]
+            if state == 1:  # E -> I (2)
+                if np.random.rand() <= self.p_EI:
+                    self.agents[i] = 2
+                    
+            elif state == 2:  # I -> II (3), R (4), ou D (5)
+                x = np.random.rand()
+                if x <= self.p_III:
+                    self.agents[i] = 3
+                elif x <= self.p_III + self.p_IR:
+                    self.agents[i] = 4
+                elif x <= self.p_III + self.p_IR + self.p_ID:
+                    self.agents[i] = 5
+                    
+            elif state == 3:  # II -> R (4) ou Null (6)
+                x = np.random.rand()
+                if x <= self.p_IR:
+                    self.agents[i] = 4
+                elif x <= self.p_IR + self.p_ID:
+                    self.agents[i] = 6
+                    
+            elif state == 5:  # D -> Null (6)
+                if np.random.rand() <= self.p_D:
+                    self.agents[i] = 6
 
-        # Change suseptible into infected
-        # Verify stochastic infections
         S_frac = self.S_serie[-1]/self.N # Fraction of S in population
         N_frac = self.N/self.N_i # Population size correction factor
         c_I_new = self.c_I * N_frac # Contact number correction
@@ -550,44 +549,17 @@ class SEIRD_II_numba():
         total_contacts_II = self.II_serie[-1] * round(c_II_new * S_frac)
         total_contacts_D = self.D_serie[-1] * round(c_D_new * S_frac)
         total_contacts = total_contacts_I + total_contacts_II + total_contacts_D
-        #change_condition_I = np.random.rand(total_contacts_I) <= self.pc
-        #change_condition_II = np.random.rand(total_contacts_II) <= self.pc
-        #change_condition_D = np.random.rand(total_contacts_D) <= self.pc
-        #change_condition = np.concatenate((change_condition_I, change_condition_II, change_condition_D))
         change_condition = np.random.rand(total_contacts) <= self.pc
-        # Select random susceptible agents to have contacts
-        S_selected = np.random.randint(0, self.S_serie[-1], total_contacts)
-        S_changed = np.unique(S_selected[change_condition])
-        # Change temporary array
-        agents_temp[sus_index[S_changed]] = 1
 
-        # Change exposed into infected
-        change_condition = np.random.rand(self.E_serie[-1]) <= self.p_EI
-        agents_temp[exp_index[change_condition]] = 2
+        drop_index = []
+        for i in range(total_contacts):
 
-        # Change infected into isolated infected, removed and dead
-        x = np.random.rand(self.I_serie[-1])
-        cond_list = [x <= self.p_III,
-                        x <= self.p_III + self.p_IR,
-                        x <= self.p_III + self.p_IR + self.p_ID]
-        agents_temp[inf_index[cond_list[2]]] = 5
-        agents_temp[inf_index[cond_list[1]]] = 4
-        agents_temp[inf_index[cond_list[0]]] = 3
+            if change_condition[i]:
+                change_index = i % self.S_serie[-1]
+                self.agents[self.sus_index[change_index]] = 1
+                drop_index.append(change_index)
 
-        # Change isolated infected into removed and null (dead removed)
-        # This means the isolated deads will not infect
-        x = np.random.rand(self.II_serie[-1])
-        cond_list = [x <= self.p_IR, 
-                        x <= self.p_IR + self.p_ID]
-        agents_temp[isol_inf_index[cond_list[1]]] = 6
-        agents_temp[isol_inf_index[cond_list[0]]] = 4
-
-        # Change dead into null
-        change_condition = np.random.rand(self.D_serie[-1]) <= self.p_D
-        agents_temp[dea_index[change_condition]] = 6
-
-        # Update agents state
-        self.agents = agents_temp
+        self.sus_index = np.delete(self.sus_index, drop_index)
 
 
     def step(self, steps):
@@ -595,11 +567,13 @@ class SEIRD_II_numba():
         for _ in range(steps):
 
             self.evolve()
-
-            states = self.agents
             
-            equal_condition = states[None,:] == np.array([0,1,2,3,4,5])[:,None]
-            S, E, I, II, R, D = np.sum(equal_condition, axis=1)
+            # Count size of states (use a seven size vector to cover states from 0 to 6)
+            counts = np.zeros(7, dtype=np.int64)
+            for i in range(self.N_i):
+                counts[self.agents[i]] += 1
+
+            S, E, I, II, R, D = counts[0], counts[1], counts[2], counts[3], counts[4], counts[5]
 
             self.S_serie.append(S)
             self.E_serie.append(E)
@@ -674,7 +648,7 @@ def func_sim_agents_numba_progressbar(init_conditions, params, dt, tf):
        params, series = func_sim_agents_numba(init_conditions, params, dt, tf, progress)
        return params, *series
 
-'''
+
 signature = nb.types.Tuple(
                             (nb.f8[:,:], nb.f8[:,:,:])
                             )(
@@ -689,35 +663,41 @@ def func_sim_agents_numba(model, init_conditions, params, dt, tf, progress_proxy
 
     series = np.empty((N_states, N_sims, N_steps), dtype=np.float64)
 
-    for i in nb.prange(N_sims):
+    match model:
 
-        match model:
+        case 'SEIRD':
 
-            case 'SEIRD':
-                epidemic = SEIRD(init_conditions[0], init_conditions[1], init_conditions[2], init_conditions[3], init_conditions[4], 
-                                    params[i][0], params[i][1], params[i][2], params[i][3], params[i][4], params[i][5], dt)
+            for i in nb.prange(N_sims):
 
-            case 'SEIRD_numba':
                 epidemic = SEIRD_numba(init_conditions[0], init_conditions[1], init_conditions[2], init_conditions[3], init_conditions[4], 
                                     params[i][0], params[i][1], params[i][2], params[i][3], params[i][4], params[i][5], dt)
-            
-            case 'SEIRD_II':
-                epidemic = SEIRD_II(init_conditions[0], init_conditions[1], init_conditions[2], init_conditions[3], init_conditions[4], init_conditions[5], 
-                                    params[i][0], params[i][1], params[i][2], params[i][3], params[i][4], params[i][5], params[i][6], params[i][7], dt)
 
-            case 'SEIRD_II_numba':
+                epidemic.step(int(tf/dt))
+
+                # Coletar arrays da simulação (excluindo array do tempo) e adicionar na listata
+                all_series = epidemic.get_series()[1:]
+
+                for j in range(N_states):
+                    series[j,i,:] = all_series[j]
+
+                progress_proxy.update(1)
+            
+        case 'SEIRD_II':
+
+            for i in nb.prange(N_sims):
+
                 epidemic = SEIRD_II_numba(init_conditions[0], init_conditions[1], init_conditions[2], init_conditions[3], init_conditions[4], init_conditions[5], 
                                     params[i][0], params[i][1], params[i][2], params[i][3], params[i][4], params[i][5], params[i][6], params[i][7], dt)
-        
-        epidemic.step(int(tf/dt))
 
-        # Coletar arrays da simulação (excluindo array do tempo) e adicionar na listata
-        all_series = epidemic.get_series()[1:]
+                epidemic.step(int(tf/dt))
 
-        for j in range(N_states):
-            series[j,i,:] = all_series[j]
+                # Coletar arrays da simulação (excluindo array do tempo) e adicionar na listata
+                all_series = epidemic.get_series()[1:]
 
-        progress_proxy.update(1)
+                for j in range(N_states):
+                    series[j,i,:] = all_series[j]
+
+                progress_proxy.update(1)
 
     return params, series 
 
@@ -726,4 +706,3 @@ def func_sim_agents_numba_progressbar(model, init_conditions, params, dt, tf):
     with ProgressBar(total=num_iterations) as progress:
        params, series = func_sim_agents_numba(model, init_conditions, params, dt, tf, progress)
        return params, *series
-'''
