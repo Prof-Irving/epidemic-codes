@@ -3,6 +3,7 @@ from tqdm import tqdm
 import numba as nb
 from numba_progress import ProgressBar, ProgressBarType
 
+
 class SEIRD():
 
     # 'S' -> 0 Suscuptible
@@ -97,7 +98,7 @@ class SEIRD():
 
     def step(self, steps):
 
-        for _ in tqdm(range(steps)):
+        for _ in range(steps):
 
             self.evolve()
             
@@ -349,10 +350,6 @@ class SEIRD_II():
         total_contacts_II = self.II_serie[-1] * round(c_II_new * S_frac)
         total_contacts_D = self.D_serie[-1] * round(c_D_new * S_frac)
         total_contacts = total_contacts_I + total_contacts_II + total_contacts_D
-        #change_condition_I = np.random.rand(total_contacts_I) <= self.pc
-        #change_condition_II = np.random.rand(total_contacts_II) <= self.pc
-        #change_condition_D = np.random.rand(total_contacts_D) <= self.pc
-        #change_condition = np.concatenate((change_condition_I, change_condition_II, change_condition_D))
         change_condition = np.random.rand(total_contacts) <= self.pc
         # Select random susceptible agents to have contacts
         S_selected = np.random.randint(0, self.S_serie[-1], total_contacts)
@@ -391,7 +388,7 @@ class SEIRD_II():
 
     def step(self, steps):
 
-        for _ in tqdm(range(steps)):
+        for _ in range(steps):
 
             self.evolve()
 
@@ -542,6 +539,7 @@ class SEIRD_II_numba():
 
         S_frac = self.S_serie[-1]/self.N # Fraction of S in population
         N_frac = self.N/self.N_i # Population size correction factor
+        #N_frac = 1 # Maybe S_frac is enought
         c_I_new = self.c_I * N_frac # Contact number correction
         c_II_new = self.c_II * N_frac
         c_D_new = self.c_D * N_frac
@@ -550,15 +548,17 @@ class SEIRD_II_numba():
         total_contacts_D = self.D_serie[-1] * round(c_D_new * S_frac)
         total_contacts = total_contacts_I + total_contacts_II + total_contacts_D
         change_condition = np.random.rand(total_contacts) <= self.pc
+        total_changes = sum(change_condition)
 
         drop_index = []
-        for i in range(total_contacts):
+        for i in range(total_changes):
 
-            if change_condition[i]:
-                change_index = i % self.S_serie[-1]
-                self.agents[self.sus_index[change_index]] = 1
-                drop_index.append(change_index)
-
+            # Select random S to change
+            change_index = np.random.randint(0, self.S_serie[-1])
+            self.agents[self.sus_index[change_index]] = 1
+            drop_index.append(change_index)
+        
+        # Exclude exposed agents from the susceptible list
         self.sus_index = np.delete(self.sus_index, drop_index)
 
 
@@ -611,13 +611,102 @@ class SEIRD_II_numba():
         return t, S, E, I, II, R, D, N
 
 
-signature = nb.types.Tuple(
-                            (nb.f8[:,:], nb.f8[:,:,:])
-                            )(
-                            nb.i8[:], nb.f8[:,:], nb.f8, nb.f8, ProgressBarType
-                            )
-@nb.jit(signature, nopython = True, parallel = True, nogil = True)
-def func_sim_agents_numba(init_conditions, params, dt, tf, progress_proxy):
+spec = [('N', nb.i8), ('S_i', nb.i8), ('I_i', nb.i8),
+        ('beta', nb.f8), ('gamma', nb.f8), ('delta', nb.f8),
+        ('t_start', nb.f8), ('t_stop', nb.f8), ('alpha', nb.f8), ('dt', nb.f8),
+        ('p_IR', nb.f8), ('p_RS', nb.f8),
+        ('S_serie', nb.types.ListType(nb.types.int64)),
+        ('I_serie', nb.types.ListType(nb.types.int64)),
+        ('R_serie', nb.types.ListType(nb.types.int64)),
+        ('t_serie', nb.types.ListType(nb.types.float64)),
+        ('agents', nb.i8[:])]
+
+@nb.experimental.jitclass(spec)
+class SIRS_numba():
+
+  def __init__(self, S_i, I_i, R_i, 
+                beta, gamma, delta, t_start, t_stop, alpha, dt):
+    # Create object properties
+    self.N = S_i + I_i + R_i
+    self.beta = beta
+    self.gamma = gamma
+    self.delta = delta
+    self.t_start = t_start
+    self.t_stop = t_stop
+    self.alpha = alpha
+    self.dt = dt
+
+    self.p_IR = self.gamma * self.dt
+    self.p_RS = self.delta * self.dt
+
+    # Create list with groups values
+    self.S_serie = nb.typed.List([S_i])
+    self.I_serie = nb.typed.List([I_i])
+    self.R_serie = nb.typed.List([R_i])
+    self.t_serie = nb.typed.List([0.0])
+
+    # Create agents
+    state = np.array([0]*S_i + [1]*I_i + [2]*R_i)
+    self.agents = state
+
+  def evolve(self):
+
+    p_SI = self.beta * self.I_serie[-1]/self.N * self.dt
+    p_SR = self.alpha * self.N/self.S_serie[-1] * self.dt
+    time_cond = self.t_serie[-1] > self.t_start and self.t_serie[-1] < self.t_stop
+
+    for i in range(self.N):
+        state = self.agents[i]
+
+        if state == 0:  # S -> I ou R
+            x = np.random.rand()
+            if x <= p_SI:
+                self.agents[i] = 1
+            elif x <= p_SI + p_SR and time_cond:
+                self.agents[i] = 2  
+
+        elif state == 1:  # I -> R
+            if np.random.rand() <= self.p_IR:
+                self.agents[i] = 2
+                
+        elif state == 2:  # R -> S
+            if np.random.rand() <= self.p_RS:  
+                self.agents[i] = 0
+
+
+  def step(self, steps):
+
+    for _ in range(steps):
+
+      self.evolve()
+
+      # Count size of states (use a seven size vector to cover states from 0 to 2)
+      counts = np.zeros(3, dtype=np.int64)
+      for i in range(self.N):
+        counts[self.agents[i]] += 1
+
+      S, I, R = counts[0], counts[1], counts[2]
+
+      self.S_serie.append(S)
+      self.I_serie.append(I)
+      self.R_serie.append(R)
+      self.t_serie.append(self.t_serie[-1]+self.dt)
+
+
+  def get_series(self):
+
+    tt = np.asarray(self.t_serie)
+    SS = np.asarray(self.S_serie)
+    II = np.asarray(self.I_serie)
+    RR = np.asarray(self.R_serie)
+
+    return tt, SS, II, RR
+
+
+# Função para fazer várias simulações de uma vez só
+# 'params' é um array 2D com combinações de parâmetros epidêmicos
+# 'init_conditions é um array 1D com as condições iniciais
+def many_sims(model, init_conditions, params, dt, tf):
 
     N_states = len(init_conditions)
     N_sims = len(params)
@@ -625,28 +714,30 @@ def func_sim_agents_numba(init_conditions, params, dt, tf, progress_proxy):
 
     series = np.empty((N_states, N_sims, N_steps), dtype=np.float64)
 
-    for i in nb.prange(N_sims):
+    for i in tqdm(range(N_sims)):
 
-        epidemic = SEIRD_numba(init_conditions[0], init_conditions[1], init_conditions[2], init_conditions[3], init_conditions[4], 
-                                params[i][0], params[i][1], params[i][2], params[i][3], params[i][4], params[i][5], dt)
+        match model:
+
+            case 'SEIRD':
+                epidemic = SEIRD(*init_conditions, *params[i][:-1], dt)
+
+            case 'SEIRD_numba':
+                epidemic = SEIRD_numba(*init_conditions, *params[i][:-1], dt)
+
+            case 'SEIRD_II':
+                epidemic = SEIRD_II(*init_conditions, *params[i][:-1], dt)
+
+            case 'SEIRD_II_numba':
+                epidemic = SEIRD_II_numba(*init_conditions, *params[i][:-1], dt)
 
         epidemic.step(int(tf/dt))
 
-        # Coletar arrays da simulação (excluindo array do tempo) e adicionar na listata
-        all_series = epidemic.get_series()[1:]
+        # Coletar arrays da simulação e adicionar na lista
+        all_series = epidemic.get_series()
 
-        for j in range(N_states):
-            series[j,i,:] = all_series[j]
+        series[:,i,:] = all_series[1:N_states+1]
 
-        progress_proxy.update(1)
-
-    return params, series 
-
-def func_sim_agents_numba_progressbar(init_conditions, params, dt, tf):
-    num_iterations = len(params)
-    with ProgressBar(total=num_iterations) as progress:
-       params, series = func_sim_agents_numba(init_conditions, params, dt, tf, progress)
-       return params, *series
+    return params, *series
 
 
 signature = nb.types.Tuple(
@@ -655,7 +746,7 @@ signature = nb.types.Tuple(
                             nb.types.unicode_type, nb.i8[:], nb.f8[:,:], nb.f8, nb.f8, ProgressBarType
                             )
 @nb.jit(signature, nopython = True, parallel = True, nogil = True)
-def func_sim_agents_numba(model, init_conditions, params, dt, tf, progress_proxy):
+def many_sims_numba_base(model, init_conditions, params, dt, tf, progress_proxy):
 
     N_states = len(init_conditions)
     N_sims = len(params)
@@ -665,7 +756,7 @@ def func_sim_agents_numba(model, init_conditions, params, dt, tf, progress_proxy
 
     match model:
 
-        case 'SEIRD':
+        case 'SEIRD_numba':
 
             for i in nb.prange(N_sims):
 
@@ -674,7 +765,7 @@ def func_sim_agents_numba(model, init_conditions, params, dt, tf, progress_proxy
 
                 epidemic.step(int(tf/dt))
 
-                # Coletar arrays da simulação (excluindo array do tempo) e adicionar na listata
+                # Coletar arrays da simulação (excluindo array do tempo) e adicionar na lista
                 all_series = epidemic.get_series()[1:]
 
                 for j in range(N_states):
@@ -682,7 +773,7 @@ def func_sim_agents_numba(model, init_conditions, params, dt, tf, progress_proxy
 
                 progress_proxy.update(1)
             
-        case 'SEIRD_II':
+        case 'SEIRD_II_numba':
 
             for i in nb.prange(N_sims):
 
@@ -691,7 +782,24 @@ def func_sim_agents_numba(model, init_conditions, params, dt, tf, progress_proxy
 
                 epidemic.step(int(tf/dt))
 
-                # Coletar arrays da simulação (excluindo array do tempo) e adicionar na listata
+                # Coletar arrays da simulação (excluindo array do tempo) e adicionar na lista
+                all_series = epidemic.get_series()[1:]
+
+                for j in range(N_states):
+                    series[j,i,:] = all_series[j]
+
+                progress_proxy.update(1)
+        
+        case 'SIRS_numba':
+
+            for i in nb.prange(N_sims):
+
+                epidemic = SIRS_numba(init_conditions[0], init_conditions[1], init_conditions[2],  
+                                    params[i][0], params[i][1], params[i][2], params[i][3], params[i][4], params[i][5], dt)
+
+                epidemic.step(int(tf/dt))
+
+                # Coletar arrays da simulação (excluindo array do tempo) e adicionar na lista
                 all_series = epidemic.get_series()[1:]
 
                 for j in range(N_states):
@@ -701,8 +809,8 @@ def func_sim_agents_numba(model, init_conditions, params, dt, tf, progress_proxy
 
     return params, series 
 
-def func_sim_agents_numba_progressbar(model, init_conditions, params, dt, tf):
+def many_sims_numba(model, init_conditions, params, dt, tf):
     num_iterations = len(params)
     with ProgressBar(total=num_iterations) as progress:
-       params, series = func_sim_agents_numba(model, init_conditions, params, dt, tf, progress)
+       params, series = many_sims_numba_base(model, init_conditions, params, dt, tf, progress)
        return params, *series
