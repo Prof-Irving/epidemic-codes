@@ -4,6 +4,84 @@ import numba as nb
 from numba_progress import ProgressBar, ProgressBarType
 
 
+spec = [('N', nb.i8), ('S_i', nb.i8), ('I_i', nb.i8),
+        ('beta', nb.f8), ('gamma', nb.f8), 
+        ('dt', nb.f8), ('p_IR', nb.f8),
+        ('S_serie', nb.types.ListType(nb.types.int64)),
+        ('I_serie', nb.types.ListType(nb.types.int64)),
+        ('R_serie', nb.types.ListType(nb.types.int64)),
+        ('t_serie', nb.types.ListType(nb.types.float64)),
+        ('agents', nb.i8[:])]
+
+@nb.experimental.jitclass(spec)
+class SIR_numba():
+
+  def __init__(self, S_i, I_i, R_i, 
+                beta, gamma, dt):
+    # Create object properties
+    self.N = S_i + I_i + R_i
+    self.beta = beta
+    self.gamma = gamma
+    self.dt = dt
+
+    self.p_IR = self.gamma * self.dt
+
+    # Create list with groups values
+    self.S_serie = nb.typed.List([S_i])
+    self.I_serie = nb.typed.List([I_i])
+    self.R_serie = nb.typed.List([R_i])
+    self.t_serie = nb.typed.List([0.0])
+
+    # Create agents
+    state = np.array([0]*S_i + [1]*I_i + [2]*R_i)
+    self.agents = state
+
+  def evolve(self):
+
+    p_SI = self.beta * self.I_serie[-1]/self.N * self.dt
+
+    for i in range(self.N):
+        
+        state = self.agents[i]
+
+        if state == 0:  # S -> I ou R
+            if np.random.rand() <= p_SI:
+                self.agents[i] = 1
+
+        elif state == 1:  # I -> R
+            if np.random.rand() <= self.p_IR:
+                self.agents[i] = 2
+
+
+  def step(self, steps):
+
+    for _ in range(steps):
+
+      self.evolve()
+
+      # Count size of states (use a seven size vector to cover states from 0 to 2)
+      counts = np.zeros(3, dtype=np.int64)
+      for i in range(self.N):
+        counts[self.agents[i]] += 1
+
+      S, I, R = counts[0], counts[1], counts[2]
+
+      self.S_serie.append(S)
+      self.I_serie.append(I)
+      self.R_serie.append(R)
+      self.t_serie.append(self.t_serie[-1]+self.dt)
+
+
+  def get_series(self):
+
+    tt = np.asarray(self.t_serie)
+    SS = np.asarray(self.S_serie)
+    II = np.asarray(self.I_serie)
+    RR = np.asarray(self.R_serie)
+
+    return tt, SS, II, RR
+
+
 class SEIRD():
 
     # 'S' -> 0 Suscuptible
@@ -718,6 +796,9 @@ def many_sims(model, init_conditions, params, dt, tf):
 
         match model:
 
+            case 'SIR_numba':
+                epidemic = SIR_numba(*init_conditions, *params[i][:-1], dt)
+
             case 'SEIRD':
                 epidemic = SEIRD(*init_conditions, *params[i][:-1], dt)
 
@@ -755,6 +836,23 @@ def many_sims_numba_base(model, init_conditions, params, dt, tf, progress_proxy)
     series = np.empty((N_states, N_sims, N_steps), dtype=np.float64)
 
     match model:
+
+        case 'SIR_numba':
+
+            for i in nb.prange(N_sims):
+
+                epidemic = SIR_numba(init_conditions[0], init_conditions[1], init_conditions[2], 
+                                    params[i][0], params[i][1], dt)
+
+                epidemic.step(int(tf/dt))
+
+                # Coletar arrays da simulação (excluindo array do tempo) e adicionar na lista
+                all_series = epidemic.get_series()[1:]
+
+                for j in range(N_states):
+                    series[j,i,:] = all_series[j]
+
+                progress_proxy.update(1)
 
         case 'SEIRD_numba':
 
